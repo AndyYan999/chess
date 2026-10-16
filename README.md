@@ -8,6 +8,8 @@ This public repository contains only the deployed website: `index.html`, this RE
 
 Open the website, choose **Online → Create room**, and send your friend the **full invitation link**. They open it on their own device. Private rooms, synchronized moves, clocks, friend chat, reconnects, draws, resignations and consensual rematches use a separate Cloudflare room service. GitHub Pages itself is static hosting; both the website and the room service must be reachable on the players' networks.
 
+Choose **White**, **Black**, or **Random** when selecting a side. Random is assigned once for each new game/room; online seats cannot be changed mid-game.
+
 You can also choose **Two players** for same-device play. Themes, board colors, piece styles, sound, premoves and focus settings remain available.
 
 GPT-6.1 Sol low is a separate local-only feature, not a public chatbot. This deployment cannot use the developer's personal ChatGPT account.

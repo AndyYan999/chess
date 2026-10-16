@@ -449,7 +449,7 @@ body.no-animations *, body.no-animations *::before, body.no-animations *::after 
     <section class="game-side" aria-label="Chess game">
       <div class="game-config">
         <div class="mode-switch" aria-label="Opponent"><button id="mode-ai" type="button" class="active" aria-pressed="true">Play GPT</button><button id="mode-local" type="button" aria-pressed="false">Two players</button><button id="mode-online" type="button" aria-pressed="false" aria-haspopup="dialog">Online</button></div>
-        <label class="side-select">You play <select id="human-color" aria-label="Your color"><option value="w">White</option><option value="b">Black</option></select></label>
+        <label class="side-select">You play <select id="human-color" aria-label="Your color"><option value="w">White</option><option value="b">Black</option><option value="random">Random</option></select></label>
       </div>
       <div id="online-statusbar" class="online-statusbar" hidden><span id="online-badge" class="online-badge" role="status">Online rooms</span><span id="online-presence" class="online-presence"></span><button id="online-manage" type="button" aria-haspopup="dialog">Room &amp; actions</button></div>
       <div id="player-top" class="player"></div>
@@ -489,7 +489,7 @@ body.no-animations *, body.no-animations *::before, body.no-animations *::after 
   <div class="online-body">
     <p id="online-error" class="online-error" role="alert" hidden></p>
     <div id="online-setup">
-      <form id="online-create-form" class="online-create-form"><h3>Create a private room</h3><div class="online-fields"><label for="online-color">Your seat<select id="online-color"><option value="w">White</option><option value="b">Black</option></select></label><label for="online-time">Time per side<select id="online-time"><option value="none">No clock</option><option value="1+0">1 + 0 · Bullet</option><option value="3+2">3 + 2 · Blitz</option><option value="5+0">5 + 0 · Blitz</option><option value="10+0">10 + 0 · Rapid</option><option value="15+10">15 + 10 · Rapid</option></select></label></div><button id="online-create" type="submit" class="primary">Create &amp; invite</button><p class="online-note">Send the secret invitation to one friend. They can play in their own browser, on any device.</p></form>
+      <form id="online-create-form" class="online-create-form"><h3>Create a private room</h3><div class="online-fields"><label for="online-color">Your seat<select id="online-color"><option value="w">White</option><option value="b">Black</option><option value="random">Random</option></select></label><label for="online-time">Time per side<select id="online-time"><option value="none">No clock</option><option value="1+0">1 + 0 · Bullet</option><option value="3+2">3 + 2 · Blitz</option><option value="5+0">5 + 0 · Blitz</option><option value="10+0">10 + 0 · Rapid</option><option value="15+10">15 + 10 · Rapid</option></select></label></div><button id="online-create" type="submit" class="primary">Create &amp; invite</button><p class="online-note">Send the secret invitation to one friend. They can play in their own browser, on any device.</p></form>
       <form id="online-join-form" class="online-join-form"><h3>Have an invitation?</h3><label for="online-join-link" class="visually-hidden">Secret invitation URL</label><div class="online-link-row"><input id="online-join-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste the full invitation link"><button id="online-join" type="submit">Join room</button></div></form>
     </div>
     <div id="online-room" hidden>
@@ -4128,7 +4128,13 @@ root.ChessPrefs=api;if(typeof module!=='undefined'&&module.exports)module.export
     return true;
   }
 
-  const extras = { Clock, captured, materialAdvantage, canPossiblyMate };
+  function resolveColor(choice, random = () => root.crypto.getRandomValues(new Uint32Array(1))[0]) {
+    if (isColor(choice)) return choice;
+    if (choice !== 'random') throw new TypeError('Invalid side choice');
+    return (random() & 1) === 0 ? 'w' : 'b';
+  }
+
+  const extras = { Clock, captured, materialAdvantage, canPossiblyMate, resolveColor };
   root.ChessExtras = extras;
   if (typeof module !== 'undefined' && module.exports) module.exports = extras;
 })(globalThis);
@@ -4138,7 +4144,7 @@ globalThis.CHESS_PUBLIC_URL = 'https://andyyan999.github.io/chess/';
 globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.dev';
 
 /* Private-room client. No board/clock mutation: all integration goes through hooks.
- * onStatus receives {active,connected,pending,roomId,color,supported,text}.
+ * onStatus receives {active,connected,pending,roomId,color,seatPreference,supported,text}.
  * open() enters the online waiting panel (onEnter), even before a room exists.
  * leave() is immediate; UI asks for confirmation first. Saved seats remain recoverable.
  */
@@ -4165,12 +4171,18 @@ globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.d
     let attempts = 0, generation = 0, operation = 0, command = null, capability = null;
     let store = {selected:null, rooms:{}, joins:{}};
     try { const saved = JSON.parse(root.localStorage.getItem(STORE)); if (saved && saved.rooms && saved.joins) store = saved; } catch (_) {}
+    if ('seatPreference' in store && !['w','b','random'].includes(store.seatPreference)) store.seatPreference = 'w';
     function persist() {
       const ids = Object.keys(store.rooms); while (ids.length > 8) { const id = ids.shift(); if (id !== store.selected) delete store.rooms[id]; }
       try { root.localStorage.setItem(STORE, JSON.stringify(store)); } catch (_) { error('This browser cannot save your room seat. Keep this tab open; reconnect after a reload may not be possible.'); }
     }
     function statusText() { return !active ? 'Online rooms' : !roomId ? 'Create a room or join a friend' : !connected ? 'Connecting…' : pending ? 'Waiting for server…' : state?.phase === 'waiting' ? 'Waiting for your friend' : state?.phase === 'finished' ? 'Game finished' : 'Connected'; }
-    function notify() { render(); hooks.onStatus?.({active, connected, pending, roomId, color, supported, text:statusText()}); }
+    function seatPreference() { return store.seatPreference ?? 'w'; }
+    function setSeatPreference(choice) {
+      if (roomId || pending || !['w','b','random'].includes(choice)) return false;
+      store.seatPreference = choice; persist(); notify(); return true;
+    }
+    function notify() { render(); hooks.onStatus?.({active, connected, pending, roomId, color, seatPreference:seatPreference(), supported, text:statusText()}); }
     function error(text) { if (el('online-error')) { el('online-error').hidden = false; el('online-error').textContent = text; } hooks.onError?.(text); }
     function clearError() { if (el('online-error')) { el('online-error').hidden = true; el('online-error').textContent = ''; } }
     function enter() { if (!active) { active = true; hooks.onEnter?.(); } notify(); }
@@ -4291,9 +4303,10 @@ globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.d
     async function createRoom(options) {
       await init(); if (!supported || pending || roomId) return false;
       const supplied = options || hooks.getCreateOptions?.() || {};
-      const choice = {hostColor:supplied.hostColor ?? 'w',timeControl:supplied.timeControl ?? {baseMs:0,incrementMs:0}};
+      const choice = {hostColor:supplied.hostColor ?? seatPreference(),timeControl:supplied.timeControl ?? {baseMs:0,incrementMs:0}};
       const {baseMs,incrementMs} = choice.timeControl;
-      if (!['w','b'].includes(choice.hostColor) || !Number.isInteger(baseMs) || !(baseMs === 0 || baseMs >= 60000 && baseMs <= 10800000) || !Number.isInteger(incrementMs) || incrementMs < 0 || incrementMs > 60000) { error('Choose White or Black, a 1–180 minute clock (or no clock), and an increment of 0–60 seconds.'); return false; }
+      if (!['w','b','random'].includes(choice.hostColor) || !Number.isInteger(baseMs) || !(baseMs === 0 || baseMs >= 60000 && baseMs <= 10800000) || !Number.isInteger(incrementMs) || incrementMs < 0 || incrementMs > 60000) { error('Choose White, Black, or Random, a 1–180 minute clock (or no clock), and an increment of 0–60 seconds.'); return false; }
+      setSeatPreference(choice.hostColor);
       const epoch = ++operation; enter(); pending = true; clearError(); notify();
       try { const seat = await post('/api/rooms', choice); if (epoch !== operation) return false; select(seat); return true; }
       catch (err) { if (epoch === operation) { pending = false; error(err.message); notify(); } return false; }
@@ -4392,6 +4405,7 @@ globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.d
       const badge = el('online-badge'); if (badge) badge.dataset.connected = String(connected);
       text('online-dialog-status', !supported ? 'Online unavailable here' : statusText());
       hide('online-setup', !!roomId); hide('online-room', !roomId);
+      const selectColor = el('online-color'); if (selectColor && selectColor.value !== seatPreference()) selectColor.value = seatPreference();
       for (const id of ['online-create','online-join','online-color','online-time','online-join-link']) disable(id, !supported || pending || !!roomId);
       const opponent = color === 'w' ? 'b' : 'w';
       const presence = c => !state?.players?.[c]?.joined ? 'seat open' : state.players[c].present && connected ? 'here' : 'disconnected';
@@ -4418,6 +4432,7 @@ globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.d
     function bind(id,type,handler) { el(id)?.addEventListener(type,handler); }
     bind('online-close','click',() => el('online-dialog')?.close());
     bind('online-manage','click',open);
+    bind('online-color','change',() => setSeatPreference(el('online-color').value));
     bind('online-create-form','submit',event => {
       event.preventDefault();
       const preset = el('online-time').value;
@@ -4432,7 +4447,7 @@ globalThis.CHESS_ONLINE_API_URL = 'https://afterhours-chess.andyyan999.workers.d
     bind('online-resign','click',() => { if (root.confirm('Resign this online game? Your opponent will win.')) resign(); });
     bind('online-reconnect','click',() => { clearError(); connect(); });
     bind('online-leave','click',() => { if (!roomId || root.confirm('Leave this room? This disconnects your browser, but does not resign or stop the game clock.')) leave(); });
-    return {init, open, leave, createRoom, joinRoom, copyInvite, sendMove, sendChat, resign, offerDraw, offerRematch, replyOffer, get state() { return state; }, get color() { return color; }, get active() { return active; }, get connected() { return connected; }, get pending() { return pending; }, get roomId() { return roomId; }};
+    return {init, open, leave, createRoom, joinRoom, copyInvite, sendMove, sendChat, resign, offerDraw, offerRematch, replyOffer, setSeatPreference, get seatPreference() { return seatPreference(); }, get state() { return state; }, get color() { return color; }, get active() { return active; }, get connected() { return connected; }, get pending() { return pending; }, get roomId() { return roomId; }};
   }
   root.ChessOnline = {createClient, apiBase};
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -4515,7 +4530,7 @@ function setupOnline(){
   onState:applyOnlineSnapshot,
   onStatus(status){if(mode!=='online')return;if(onlineWasConnected&&!status.connected)invalidate();onlineWasConnected=status.connected;render();},
   onError(text){if(mode==='online')toast(text);},
-  getCreateOptions(){const s=clock.read();return {hostColor:humanColor,timeControl:{baseMs:s.baseMs,incrementMs:s.incrementMs}};}
+  getCreateOptions(){const s=clock.read();return {hostColor:onlineClient?.seatPreference||sideChoice,timeControl:{baseMs:s.baseMs,incrementMs:s.incrementMs}};}
  });
  $('mode-online')?.addEventListener('click',()=>{void onlineClient.open()});
  if(served&&new URLSearchParams(location.hash.slice(1)).has('room'))void onlineClient.init();
@@ -4543,7 +4558,7 @@ function pieceSVG(p,cls='piece'){
  const detail=p.type==='n'?'<circle cx="29" cy="22" r="1.5" fill="'+stroke+'"/>':p.type==='b'?'<path d="m29 18 6 8" stroke="'+stroke+'" fill="none"/>':p.type==='q'?'<g fill="'+fill+'" stroke="'+stroke+'"><circle cx="18" cy="19" r="3"/><circle cx="32" cy="10" r="3"/><circle cx="46" cy="19" r="3"/></g>':'';
  return '<svg class="'+cls+'" viewBox="0 0 64 64" aria-hidden="true"><path d="'+(modern?stauntonPaths:paths)[p.type]+'" fill="'+fill+'" stroke="'+stroke+'" stroke-width="1.4" stroke-linejoin="round"/>'+detail+'<path d="M23 43h18" stroke="'+stroke+'" stroke-width="1.2"/></svg>';
 }
-let game=new Chess(),mode='ai',humanColor='w',flipped=false,busy=false,selected=null,focusSquare='e2',connection='offline',messages=[],moving=false,lastMove=null;
+let game=new Chess(),mode='ai',humanColor='w',sideChoice='w',flipped=false,busy=false,selected=null,focusSquare='e2',connection='offline',messages=[],moving=false,lastMove=null;
 let epoch=0,moveController=null,chatController=null,soundEnabled=false,audio=null,soundEvents=0,confirmAction=null;
 const storageKey='afterhours.chess.v1';
 const clockPresets={'none':[0,0],'1+0':[60000,0],'3+2':[180000,2000],'5+0':[300000,0],'10+0':[600000,0],'15+10':[900000,10000]};
@@ -4691,12 +4706,12 @@ async function sendChat(text,retry=false){
  }catch(error){if(generation!==epoch)return;chatError=controller.signal.aborted?'The chat request timed out. Your message is saved.':error.message;connection='error';}
  finally{if(generation===epoch){chatBusy=false;chatController=null;render()}}
 }
-function save(){if(mode==='online')return;try{localStorage.setItem(storageKey,JSON.stringify({version:1,fen:game.fen(),pgn:game.pgn(),mode,humanColor,flipped,soundEnabled,messages,clock:clock.snapshot(),clockHistory,timeControl}));}catch{storageAvailable=false}}
+function save(){if(mode==='online')return;try{localStorage.setItem(storageKey,JSON.stringify({version:1,fen:game.fen(),pgn:game.pgn(),mode,humanColor,sideChoice,flipped,soundEnabled,messages,clock:clock.snapshot(),clockHistory,timeControl}));}catch{storageAvailable=false}}
 function restore(){
  try{const state=JSON.parse(localStorage.getItem(storageKey)||'null');if(!state||state.version!==1)return;
  const restored=new Chess();if(state.pgn)restored.loadPgn(state.pgn);else restored.load(state.fen);
  if(restored.fen()!==state.fen)throw new Error('Saved position mismatch');game=restored;lastMove=game.history({verbose:true}).at(-1)||null;
- mode=state.mode==='local'?'local':'ai';humanColor=state.humanColor==='b'?'b':'w';flipped=!!state.flipped;soundEnabled=!!state.soundEnabled;
+ mode=state.mode==='local'?'local':'ai';humanColor=state.humanColor==='b'?'b':'w';sideChoice=['w','b','random'].includes(state.sideChoice)?state.sideChoice:humanColor;flipped=!!state.flipped;soundEnabled=!!state.soundEnabled;
  messages=Array.isArray(state.messages)?state.messages.filter(m=>m&&['user','assistant'].includes(m.role)&&typeof m.content==='string').slice(-60):[];
  if(state.clock){try{if(state.clock.baseMs>10800000||state.clock.incrementMs>60000)throw new Error('Invalid saved time control');clock.restore(state.clock);clockHistory=Array.isArray(state.clockHistory)?state.clockHistory.slice(0,game.history().length):[];if(state.timeControl&&(Object.hasOwn(clockPresets,state.timeControl.id)||state.timeControl.id==='custom'))timeControl=state.timeControl;}catch{clock=new ChessExtras.Clock();clockHistory=[];timeControl={id:'none',minutes:5,increment:0}}}
  if(game.isGameOver())clock.pause();
@@ -4755,7 +4770,8 @@ function render(){
  $('status').textContent=positionStatus();
  if(busy)$('status').insertAdjacentHTML('beforeend','<span class="thinking-dots" aria-label="GPT thinking"><i></i><i></i><i></i></span>');
  $('status-meta').textContent=mode==='online'?(!onlineClient?.roomId?'Create a room and send its invitation':!onlineClient.connected?'Reconnecting · moves locked':onlineSnapshot?.phase==='waiting'?'Share your secret invitation':onlineSnapshot?.phase==='finished'?'Room actions · offer a rematch':'You play '+(humanColor==='w'?'White':'Black')+' · server-synced'):isGameOver()?(game.isCheckmate()?'No legal escape from check · Undo or New game':timedOutcome?'Clock has ended · Undo or New game':'Game finished · Undo or New game'):clockPaused()?'Clock paused · Resume to play':busy?'GPT is considering the board…':game.history().length?'Move '+game.fen().split(' ')[5]+' · '+(mode==='local'?'Two players':'Your color: '+(humanColor==='w'?'white':'black')):'Make yourself at home.';
- $('mode-ai').classList.toggle('active',mode==='ai');$('mode-local').classList.toggle('active',mode==='local');$('mode-ai').setAttribute('aria-pressed',String(mode==='ai'));$('mode-local').setAttribute('aria-pressed',String(mode==='local'));$('human-color').disabled=mode==='local'||mode==='online';$('human-color').value=humanColor;
+ $('mode-ai').classList.toggle('active',mode==='ai');$('mode-local').classList.toggle('active',mode==='local');$('mode-ai').setAttribute('aria-pressed',String(mode==='ai'));$('mode-local').setAttribute('aria-pressed',String(mode==='local'));$('human-color').disabled=mode==='local'||mode==='online'&&(!onlineClient||!!onlineClient.roomId||onlineClient.pending);$('human-color').value=mode==='online'?(onlineClient?.roomId?(onlineClient.color||humanColor):(onlineClient?.seatPreference||'w')):sideChoice;
+ $('human-color').title=mode==='online'?(onlineClient?.roomId?'Assigned by the room server. Create a new room to change seats.':'Choose your room seat. Random is assigned once by the server.'):sideChoice==='random'?'Random assigned you '+(humanColor==='w'?'White':'Black')+'. New games pick again.':'Choose White, Black, or Random.';
  $('mode-online')?.classList.toggle('active',mode==='online');$('mode-online')?.setAttribute('aria-pressed',String(mode==='online'));$('mode-ai').disabled=publicHosted&&!aiAvailable;
  $('apply-time').disabled=mode==='online';$('apply-time').title=mode==='online'?'Room clocks are chosen at creation.':'';
  $('new-game').textContent=mode==='online'?(onlineSnapshot?.phase==='finished'?'Rematch':'Room actions'):'New game';
@@ -4840,7 +4856,7 @@ $('board').addEventListener('keydown',e=>{
 $('mode-local').addEventListener('click',()=>selectSoloMode('local'));
 $('notice-local').addEventListener('click',()=>$('mode-local').click());
 $('mode-ai').addEventListener('click',()=>selectSoloMode('ai'));
-$('human-color').addEventListener('change',()=>{const color=$('human-color').value;const action=()=>{humanColor=color;flipped=color==='b';newGame()};if(game.history().length){$('human-color').value=humanColor;confirmReset(action,'Switch sides, start fresh?')}else action()});
+$('human-color').addEventListener('change',()=>{const choice=$('human-color').value;if(!['w','b','random'].includes(choice)){render();return}if(mode==='online'){onlineClient?.setSeatPreference(choice);render();return}const action=()=>{sideChoice=choice;if(choice!=='random'){humanColor=choice;flipped=choice==='b'}newGame()};if(game.history().length){$('human-color').value=sideChoice;confirmReset(action,'Switch sides, start fresh?')}else action()});
 $('chat-form').addEventListener('submit',e=>{e.preventDefault();const text=$('chat-input').value;if(mode==='online'){if(onlineClient?.sendChat(text))$('chat-input').value='';return}if(!text.trim()||!aiAvailable||chatBusy)return;$('chat-input').value='';sendChat(text)});
 $('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('chat-form').requestSubmit()}});
 document.querySelectorAll('[data-prompt]').forEach(el=>el.addEventListener('click',()=>sendChat(el.dataset.prompt)));
@@ -4852,7 +4868,7 @@ function confirmReset(action,title='A fresh start?'){
 $('confirm-cancel').addEventListener('click',()=>{confirmAction=null;$('confirm-dialog').close()});
 $('confirm-dialog').addEventListener('cancel',()=>{confirmAction=null});
 $('confirm-yes').addEventListener('click',()=>{const action=confirmAction;confirmAction=null;$('confirm-dialog').close();action?.()});
-function newGame(){if(mode==='online'){void onlineClient?.open();return}invalidate();clock.reset();clockHistory=[];timedOutcome=null;game=new Chess();lastMove=null;messages=[];chatError='';chatNeedsRetry=false;pendingChatMessage=null;focusSquare=humanColor==='w'?'e2':'e7';render();toast('A new game. A fresh idea.');requestAIMove()}
+function newGame(){if(mode==='online'){void onlineClient?.open();return}humanColor=ChessExtras.resolveColor(sideChoice);if(sideChoice==='random')flipped=humanColor==='b';invalidate();clock.reset();clockHistory=[];timedOutcome=null;game=new Chess();lastMove=null;messages=[];chatError='';chatNeedsRetry=false;pendingChatMessage=null;focusSquare=humanColor==='w'?'e2':'e7';render();toast('A new game. A fresh idea.');requestAIMove()}
 $('new-game').addEventListener('click',()=>{if(mode==='online'){if(onlineSnapshot?.phase==='finished'&&!onlineSnapshot.offer)onlineClient?.offerRematch();void onlineClient?.open();return}confirmReset(newGame)});
 $('undo').addEventListener('click',()=>{
  if(mode==='online'){toast('Online takebacks need agreement and are not enabled.');return}
@@ -4868,7 +4884,7 @@ $('download').addEventListener('click',()=>{
  const output=exported.pgn()+'\n';
  const url=URL.createObjectURL(new Blob([output],{type:'application/x-chess-pgn'})),a=document.createElement('a');a.href=url;a.download='afterhours-game.pgn';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
-window.TOOL={get online(){return onlineClient},get premove(){return queuedPremove?{...queuedPremove}:null},get clock(){return clock},get timedOutcome(){return timedOutcome},tickClock,get settings(){return {...settings}},get game(){return game},get mode(){return mode},get humanColor(){return humanColor},get busy(){return busy||moving||mode==='online'&&!!onlineClient?.pending},get aiThinking(){return busy},get chatBusy(){return chatBusy},get selected(){return selected},get flipped(){return flipped},get messages(){return messages},get connection(){return connection},get aiAvailable(){return aiAvailable},get moveError(){return moveError},get chatError(){return chatError},get soundEnabled(){return soundEnabled},get audioState(){return audio?.state||'not-started'},get soundEvents(){return soundEvents},get storageAvailable(){return storageAvailable},get epoch(){return epoch},get promotionPending(){return promotionPending},render,pieceSVG};
+window.TOOL={get online(){return onlineClient},get premove(){return queuedPremove?{...queuedPremove}:null},get clock(){return clock},get timedOutcome(){return timedOutcome},tickClock,get settings(){return {...settings}},get game(){return game},get mode(){return mode},get humanColor(){return humanColor},get sideChoice(){return mode==='online'?(onlineClient?.seatPreference||'w'):sideChoice},get busy(){return busy||moving||mode==='online'&&!!onlineClient?.pending},get aiThinking(){return busy},get chatBusy(){return chatBusy},get selected(){return selected},get flipped(){return flipped},get messages(){return messages},get connection(){return connection},get aiAvailable(){return aiAvailable},get moveError(){return moveError},get chatError(){return chatError},get soundEnabled(){return soundEnabled},get audioState(){return audio?.state||'not-started'},get soundEvents(){return soundEvents},get storageAvailable(){return storageAvailable},get epoch(){return epoch},get promotionPending(){return promotionPending},render,pieceSVG};
 $('settings-open')?.addEventListener('click',()=>{$('settings-dialog').showModal()});
 $('settings-close')?.addEventListener('click',()=>{$('settings-dialog').close()});
 for(const key of ['theme','board','pieces'])$(key==='pieces'?'piece-select':key+'-select')?.addEventListener('change',e=>updateSettings({[key]:e.target.value}));
